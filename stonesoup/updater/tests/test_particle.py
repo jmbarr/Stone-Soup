@@ -21,16 +21,24 @@ from ...updater.particle import (
 from ...predictor.particle import BernoulliParticlePredictor
 from ...models.transition.linear import ConstantVelocity, CombinedLinearGaussianTransitionModel
 from ...types.update import BernoulliParticleStateUpdate
-from ...regulariser.particle import MCMCRegulariser
 from ...sampler.particle import ParticleSampler
 from ...sampler.detection import SwitchingDetectionSampler, GaussianDetectionParticleSampler
+from ...regulariser.particle import MCMCRegulariser
+
+
+def dummy_constraint_function(particles):
+    part_indx = particles.state_vector[1, :] > 20
+    return part_indx
 
 
 @pytest.fixture(params=(
         ParticleUpdater,
         partial(ParticleUpdater, resampler=SystematicResampler()),
         GromovFlowParticleUpdater,
-        GromovFlowKalmanParticleUpdater))
+        GromovFlowKalmanParticleUpdater,
+        partial(ParticleUpdater, constraint_func=dummy_constraint_function),
+        partial(ParticleUpdater, resampler=SystematicResampler(), regulariser=MCMCRegulariser()),
+        partial(ParticleUpdater, regulariser=MCMCRegulariser())))
 def updater(request):
     updater_class = request.param
     measurement_model = LinearGaussian(
@@ -53,8 +61,10 @@ def test_particle(updater):
                  ]
 
     prediction = ParticleStatePrediction(None, particle_list=particles,
-                                         timestamp=timestamp)
-    measurement = Detection([[20.0]], timestamp=timestamp)
+                                         timestamp=timestamp,
+                                         parent=ParticleState(None, particle_list=particles))
+    measurement = Detection([[15.0]], timestamp=timestamp,
+                            measurement_model=updater.measurement_model)
     eval_measurement_prediction = ParticleMeasurementPrediction(None, particle_list=[
                                             Particle(i.state_vector[0, :], 1 / 9)
                                             for i in particles],
@@ -71,12 +81,21 @@ def test_particle(updater):
     # Don't know what the particles will exactly be due to randomness so check
     # some obvious properties
 
-    assert np.all(weight == 1 / 9 for weight in updated_state.weight)
+    if hasattr(updater, 'constraint_func') and updater.constraint_func is not None:
+        indx = dummy_constraint_function(prediction)
+        assert np.all(updated_state.weight[indx] == 0)
+
+    assert np.isclose(np.sum(updated_state.weight.astype(np.float_)), 1.0, rtol=1e-5)
     assert updated_state.timestamp == timestamp
     assert updated_state.hypothesis.measurement_prediction == measurement_prediction
     assert updated_state.hypothesis.prediction == prediction
     assert updated_state.hypothesis.measurement == measurement
-    assert np.allclose(updated_state.mean, StateVectors([[20.0], [20.0]]), rtol=2e-2)
+    if hasattr(updater, 'constraint_func') and updater.constraint_func is not None:
+        assert np.allclose(updated_state.mean, StateVectors([[15.0], [15.0]]), rtol=2e-2)
+    else:
+        if not hasattr(updater, 'regulariser') or updater.regulariser is None:
+            # Skip state check for regularised version
+            assert np.allclose(updated_state.mean, StateVectors([[15.0], [20.0]]), rtol=5e-2)
 
 
 def test_bernoulli_particle():

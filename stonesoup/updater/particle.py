@@ -1,5 +1,7 @@
 import copy
 from functools import lru_cache
+from typing import Callable
+import warnings
 
 import numpy as np
 from scipy.linalg import inv
@@ -29,8 +31,31 @@ class ParticleUpdater(Updater):
     """
 
     resampler: Resampler = Property(default=None, doc='Resampler to prevent particle degeneracy')
-    regulariser: Regulariser = Property(default=None, doc="Regulariser to prevent particle "
-                                                          "impoverishment")
+    regulariser: Regulariser = Property(
+        default=None,
+        doc='Regulariser to prevent particle impoverishment. The regulariser '
+            'is normally used after resampling. If a :class:`~.Resampler` is defined, '
+            'then regularisation will only take place if the particles have been '
+            'resampled. If the :class:`~.Resampler` is not defined but a '
+            ':class:`~.Regulariser` is, then regularisation will be conducted under the '
+            'assumption that the user intends for this to occur.')
+
+    constraint_func: Callable = Property(
+        default=None,
+        doc="Callable, user defined function for applying "
+            "constraints to the states. This is done by setting the weights "
+            "of particles to 0 for particles that are not correctly constrained. "
+            "This function provides indices of the unconstrained particles and "
+            "should accept a :class:`~.ParticleState` object and return an array-like "
+            "object of logical indices. "
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if self.resampler is None and self.regulariser is not None:
+            warnings.warn('`regulariser` has been defined but a `resampler` has not. This'
+                          ' is not normal procedure.')
 
     def update(self, hypothesis, **kwargs):
         """Particle Filter update step
@@ -61,16 +86,25 @@ class ParticleUpdater(Updater):
         new_weight = predicted_state.log_weight + measurement_model.logpdf(
             hypothesis.measurement, predicted_state, **kwargs)
 
+        # Apply constraints if defined
+        if self.constraint_func is not None:
+            part_indx = self.constraint_func(predicted_state)
+            new_weight[part_indx] = -1*np.inf
+
         # Normalise the weights
         new_weight -= logsumexp(new_weight)
 
         predicted_state.log_weight = new_weight
 
         # Resample
+        resample_flag = True
         if self.resampler is not None:
-            predicted_state = self.resampler.resample(predicted_state)
+            resampled_state = self.resampler.resample(predicted_state)
+            if resampled_state == predicted_state:
+                resample_flag = False
+            predicted_state = resampled_state
 
-        if self.regulariser is not None:
+        if self.regulariser is not None and resample_flag:
             prior = hypothesis.prediction.parent
             predicted_state = self.regulariser.regularise(prior,
                                                           predicted_state)
