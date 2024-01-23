@@ -5,11 +5,12 @@ from functools import lru_cache
 import numpy as np
 from scipy.spatial import distance
 
-from .base import Base, Property
-from .types.state import State
+from .base import BaseMeasure
+from ..base import Property
+from ..types.state import State, ParticleState, GaussianState
 
 
-class Measure(Base):
+class Measure(BaseMeasure):
     """Measure base type
 
     A measure provides a means to assess the separation between two
@@ -401,3 +402,100 @@ class ObservationAccuracy(Measure):
         mins = [min(s1, s2) for s1, s2 in zip(s1, s2)]
         maxs = [max(s1, s2) for s1, s2 in zip(s1, s2)]
         return np.sum(mins)/np.sum(maxs)
+
+
+class KLDivergence(Measure):
+    r"""Kullback-Leibler divergence between two distributions
+
+    Kullback-Leibler divergence, also referred to as relative entropy, is a
+    statistical distance. It describes how a probability distribution is
+    different from another. The expression for Kullback-Leibler divergence
+    is given by [1]_
+
+    .. math::
+        D_{KL}(P\Vert Q) = \sum_x P(x)\log \frac{P(x)}{Q(x)},
+
+    where :math:`P(x)` is the first distribution, or ``state1`` and :math:`Q(x)`
+    is the second distribution or, ``state2``. It is worth noting that Kullback-Leibler
+    divergence is not symmetric under interchange of :math:`P(x)` and :math:`Q(x)`. The
+    implementation here uses natural log meaning the returned divergence has units in nats.
+    This implementation assumes a discrete probability space and currently only accepts
+    :class:`~.ParticleState`.
+
+    References
+    ----------
+    .. [1] MacKay, David J. C. 2003. Information Theory, Inference and Learning
+       Algorithms, 1st Ed. Cambridge University Press, """
+
+    def __call__(self, state1, state2):
+        r"""
+        Computes the Kullback–Leibler divergence from ``state1`` to ``state2``
+
+        Parameters
+        ----------
+        state1 : :class:`~.ParticleState`
+        state2 : :class:`~.ParticleState`
+
+        Returns
+        -------
+        float
+            Kullback–Leibler divergence from ``state1`` to ``state2``
+
+        """
+        if isinstance(state1, ParticleState) and isinstance(state2, ParticleState):
+            if len(state1.particles) == len(state2.particles):
+
+                log_term = np.zeros(state1.log_weight.shape)
+
+                invalid_indx = (np.isinf(state1.log_weight) | np.isnan(state1.log_weight)
+                                | np.isinf(state2.log_weight) | np.isnan(state2.log_weight))
+
+                # Do not consider NANs and inf in the subtraction
+                log_term[~invalid_indx] = state1.log_weight[~invalid_indx] \
+                    - state2.log_weight[~invalid_indx]
+
+                kld = np.sum(np.exp(state1.log_weight)*log_term)
+            else:
+                raise ValueError(f'The input sizes are not compatible '
+                                 f'({len(state1.particles)} != {len(state2.particles)})')
+
+        elif isinstance(state1, GaussianState) and isinstance(state2, GaussianState):
+
+            state1 = copy.copy(state1)
+            state2 = copy.copy(state2)
+
+            if self.mapping is not None:
+                state1.state_vector = state1.state_vector[self.mapping, :]
+                state2.state_vector = state2.state_vector[self.mapping2, :]
+
+                rows = np.array(self.mapping, dtype=np.intp)
+                columns = np.array(self.mapping, dtype=np.intp)
+                state1.covar = state1.covar[rows[:, np.newaxis], columns]
+
+                rows2 = np.array(self.mapping2, dtype=np.intp)
+                columns2 = np.array(self.mapping2, dtype=np.intp)
+                state2.covar = state2.covar[rows2[:, np.newaxis], columns2]
+
+            if state1.ndim == state2.ndim:
+
+                log_term = np.log(np.linalg.det(state2.covar) / np.linalg.det(state1.covar))
+
+                n_dims = state1.ndim
+
+                inv_state2_covar = np.linalg.inv(state2.covar)
+                trace_term = np.trace(inv_state2_covar@state1.covar)
+
+                delta = state2.state_vector - state1.state_vector
+                mahalanobis_term = delta.T @ inv_state2_covar @ delta
+
+                kld = float(0.5*(log_term - n_dims + trace_term + mahalanobis_term))
+
+            else:
+                raise ValueError(f'The state dimensions are not compatible '
+                                 f'({state1.ndim} != {state2.ndim}')
+
+        else:
+            raise NotImplementedError('This measure is currently only compatible with '
+                                      'ParticleState or GaussianState types')
+
+        return kld

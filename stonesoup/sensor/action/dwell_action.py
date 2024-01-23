@@ -51,7 +51,7 @@ class ChangeDwellAction(Action):
             # so rotate then stay
             duration = self.rotation_end_time - current_time
 
-        dwell_centre = np.asfarray(copy(init_value))  # in case value is mutable
+        dwell_centre = np.asarray(copy(init_value), dtype=np.float64)  # in case value is mutable
 
         angle_delta = duration.total_seconds() * self.generator.rps * 2 * np.pi
         if self.increasing_angle:
@@ -67,8 +67,11 @@ class DwellActionsGenerator(RealNumberActionGenerator):
     time period."""
 
     owner: object = Property(doc="Object with `timestamp`, `rpm` (revolutions per minute) and "
-                                 "dwell-centre attributes")
-    resolution: Angle = Property(default=np.radians(1), doc="Resolution of action space")
+                                 "`resolution`.")
+    resolution: Angle = Property(default=np.radians(1),
+                                 doc="Resolution of the action space.")
+    rpm: float = Property(default=60,
+                          doc="The number of rotations per minute (RPM).")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -106,7 +109,7 @@ class DwellActionsGenerator(RealNumberActionGenerator):
 
     @property
     def rps(self):
-        return self.owner.rpm / 60
+        return self.rpm / 60
 
     @property
     def angle_delta(self):
